@@ -13,7 +13,11 @@ This should be verey similar to the how training is done in the LTR toy program.
 :param dictionary xgb_params The XGBoost configuration parameters, such as the objective function, e.g. {'objective': 'reg:logistic'} 
 '''
 def train(xgb_train_data, num_rounds=5, xgb_params=None ):
-    print("IMPLEMENT ME: xgb train")
+    dtrain = xgb.DMatrix(f'{xgb_train_data}?format=libsvm')
+
+    bst = xgb.train(xgb_params, dtrain,
+                num_rounds)  # Do the training.  NOTE: in this toy example we did not use any hold out data
+    return bst
 
 ##### Step 3.b:
 '''
@@ -35,8 +39,7 @@ all features for all documents in a single query.  See the course content for mo
 :param string terms_field: The name of the field to filter our doc_ids on 
 '''
 def create_feature_log_query(query, doc_ids, click_prior_query, featureset_name, ltr_store_name, size=200, terms_field="_id"):
-    print("IMPLEMENT ME: create_feature_log_query with proper LTR syntax")
-    return {
+    es_query = {
         'size': size,
         'query': {
             'bool': {
@@ -45,11 +48,30 @@ def create_feature_log_query(query, doc_ids, click_prior_query, featureset_name,
                         "terms": {
                             terms_field: doc_ids
                         }
+                    },
+                    {
+                        "sltr": {
+                            "_name": "logged_featureset",
+                            "featureset": featureset_name,
+                            "store": ltr_store_name,
+                            "params": {
+                                "keywords": query
+                            }
+                        }
                     }
                 ]
             }
+        },
+        "ext": {
+           "ltr_log": {
+                "log_specs": {
+                    "name": "ltr_log",
+                    "named_query": "logged_featureset"
+                }
+            }
         }
     }
+    return es_query
 
 
 ##### Step 4.e:
@@ -70,11 +92,44 @@ Called from ltr_utils.py
 def create_rescore_ltr_query(user_query: str, query_obj, click_prior_query: str, ltr_model_name: str,
                              ltr_store_name: str,
                              rescore_size=500, main_query_weight=1, rescore_query_weight=2):
-    print("IMPLEMENT ME: create_rescore_ltr_query")
-    # query_obj["rescore"] = { ... }
+    query_obj["rescore"] = {
+        "window_size": rescore_size,
+        "query": {
+            "rescore_query": {
+                "sltr": {
+                    "params": {
+                        "keywords": user_query
+                    },
+                    "model": ltr_model_name,
+                    "store": ltr_store_name,
+                }
+            },
+            "score_mode": "total",
+            "query_weight": main_query_weight,
+            "rescore_query_weight": rescore_query_weight
+        }
+    }
 
 
 ##### Step Extract LTR Logged Features:
+
+FEATURE_KEYS = [
+    'name_match', 
+    'name_phrase_match', 
+    'customer_review_count', 
+    'customer_review_average', 
+    'artist_name_phrase_match', 
+    'short_description_phrase_match', 
+    'long_description_phrase_match',
+    'sales_rank_short_term',
+    'sku_phrase_match',
+    'features_phrase_match',
+    'in_store_availability',
+    'online_availability',
+    'on_sale',
+    'digital'
+    ]
+
 '''
 Using the hits object (e.g. response['hits']['hits']) returned by OpenSearch, iterate through the results
 and extract the features into a data frame.
@@ -85,17 +140,22 @@ and extract the features into a data frame.
 def extract_logged_features(hits, query_id):
     import numpy as np
     import pandas as pd
-    print("IMPLEMENT ME: __log_ltr_query_features: Extract log features out of the LTR:EXT response and place in a data frame")
     feature_results = {}
     feature_results["doc_id"] = []  # capture the doc id so we can join later
     feature_results["query_id"] = []  # ^^^
     feature_results["sku"] = []
-    feature_results["name_match"] = []
+    for k in FEATURE_KEYS:
+        feature_results[k] = []
     rng = np.random.default_rng(12345)
     for (idx, hit) in enumerate(hits):
+        # print(hit['fields']['_ltrlog'][0]['ltr_log'])
         feature_results["doc_id"].append(int(hit['_id']))  # capture the doc id so we can join later
         feature_results["query_id"].append(query_id)  # super redundant, but it will make it easier to join later
         feature_results["sku"].append(int(hit['_id']))
-        feature_results["name_match"].append(rng.random())
+        feature_log = hit['fields']['_ltrlog'][0]['ltr_log']
+        for k in FEATURE_KEYS:
+            feature_record = next(filter(lambda v: v['name'] == k, feature_log))
+            value = feature_record.get('value', 0)
+            feature_results[k].append(value)
     frame = pd.DataFrame(feature_results)
     return frame.astype({'doc_id': 'int64', 'query_id': 'int64', 'sku': 'int64'})
