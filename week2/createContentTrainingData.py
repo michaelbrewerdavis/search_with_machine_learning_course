@@ -22,6 +22,8 @@ general.add_argument("--label", default="id", help="id is default and needed for
 # IMPLEMENT: Setting min_products removes infrequent categories and makes the classifier's task easier.
 general.add_argument("--min_products", default=0, type=int, help="The minimum number of products per category (default is 0).")
 
+general.add_argument("--num_files", default=0, type=int, help="The maximum number of files to process (default is all)")
+
 args = parser.parse_args()
 output_file = args.output
 path = Path(output_file)
@@ -33,6 +35,9 @@ if args.input:
     directory = args.input
 # IMPLEMENT: Track the number of items in each category and only output if above the min
 min_products = args.min_products
+
+num_files = args.num_files
+
 names_as_labels = False
 if args.label == 'name':
     names_as_labels = True
@@ -58,12 +63,31 @@ def _label_filename(filename):
               labels.append((cat, transform_name(name)))
     return labels
 
+def count_labels(all_labels):
+    label_counts = {}
+
+    for labels in all_labels:
+        for (cat, name) in labels:
+            if label_counts.get(cat) == None:
+                label_counts[cat] = 0
+            label_counts[cat] += 1
+
+    return label_counts
+
 if __name__ == '__main__':
     files = glob.glob(f'{directory}/*.xml')
+    if num_files:
+        files = files[:num_files]
+
     print("Writing results to %s" % output_file)
     with multiprocessing.Pool() as p:
         all_labels = tqdm(p.imap(_label_filename, files), total=len(files))
+
+        all_labels = list(all_labels)
+        label_counts = count_labels(all_labels)
+
         with open(output_file, 'w') as output:
             for label_list in all_labels:
                 for (cat, name) in label_list:
-                    output.write(f'__label__{cat} {name}\n')
+                    if label_counts.get(cat, 0) >= min_products:
+                        output.write(f'__label__{cat} {name}\n')
